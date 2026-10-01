@@ -14,6 +14,7 @@ var settings := {
 	"host": "127.0.0.1",
 	"auto_start": true,
 	"debug_mode": true,
+	"read_only_mode": false,
 	"disabled_tools": [],
 	"language": "",  # Empty means auto-detect
 	"collapsed_categories": []  # Categories that are collapsed
@@ -63,6 +64,7 @@ func _enter_tree() -> void:
 
 	mcp_server.initialize(settings.port, settings.host, settings.debug_mode)
 	mcp_server.set_disabled_tools(settings.disabled_tools)
+	mcp_server.set_read_only(settings.read_only_mode)
 
 	_create_dock()
 
@@ -263,6 +265,13 @@ func _create_server_tab() -> Control:
 	debug_check.button_pressed = settings.debug_mode
 	debug_check.toggled.connect(_on_debug_toggled)
 	settings_section.add_child(debug_check)
+
+	var read_only_check = CheckBox.new()
+	read_only_check.text = _tr("read_only")
+	read_only_check.tooltip_text = _tr("read_only_hint")
+	read_only_check.button_pressed = settings.read_only_mode
+	read_only_check.toggled.connect(_on_read_only_toggled)
+	settings_section.add_child(read_only_check)
 
 	# Language selector
 	var lang_container = HBoxContainer.new()
@@ -1088,6 +1097,13 @@ func _on_debug_toggled(pressed: bool) -> void:
 	settings.debug_mode = pressed
 	if mcp_server:
 		mcp_server.set_debug_mode(pressed)
+	_save_settings()
+
+
+func _on_read_only_toggled(pressed: bool) -> void:
+	settings.read_only_mode = pressed
+	if mcp_server:
+		mcp_server.set_read_only(pressed)
 	_save_settings()
 
 

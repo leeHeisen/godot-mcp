@@ -252,6 +252,58 @@ EXAMPLES:
 				},
 				"required": ["action"]
 			}
+		},
+		{
+			"name": "mesh_library",
+			"description": """MESH LIBRARY EXPORT: Build a MeshLibrary resource from 3D scenes.
+Migrated from the bradypp/godot-mcp "export_mesh_library" tool.
+
+ACTIONS:
+- export_from_scene: Export the children of one scene into a MeshLibrary
+- export_from_scenes: Merge several scenes into a single MeshLibrary
+- get_info: Inspect an existing MeshLibrary resource
+
+BEHAVIOUR:
+- Each direct child of the scene root becomes one MeshLibrary item.
+- A MeshInstance3D is used directly; otherwise the first MeshInstance3D found
+  among the child's descendants is used.
+- A CollisionShape3D child is exported as the item's collision shape and the mesh
+  is reused as the item preview, exactly like the bradypp implementation.
+
+EXAMPLES:
+- Export one scene: {"action": "export_from_scene", "scene_path": "res://models/kit.tscn", "output_path": "res://resources/kit.tres"}
+- Only some items: {"action": "export_from_scene", "scene_path": "res://models/kit.tscn", "output_path": "res://resources/kit.tres", "mesh_item_names": ["Wall", "Floor"]}
+- Merge scenes: {"action": "export_from_scenes", "scene_paths": ["res://models/a.tscn", "res://models/b.tscn"], "output_path": "res://resources/kit.tres"}
+- Inspect: {"action": "get_info", "path": "res://resources/kit.tres"}""",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"action": {
+						"type": "string",
+						"enum": ["export_from_scene", "export_from_scenes", "get_info"],
+						"description": "MeshLibrary action"
+					},
+					"scene_path": {
+						"type": "string",
+						"description": "Source scene path (export_from_scene)"
+					},
+					"scene_paths": {
+						"type": "array",
+						"items": {"type": "string"},
+						"description": "Source scene paths (export_from_scenes)"
+					},
+					"output_path": {
+						"type": "string",
+						"description": "Destination MeshLibrary path, e.g. res://resources/kit.tres"
+					},
+					"mesh_item_names": {
+						"type": "array",
+						"items": {"type": "string"},
+						"description": "Only export children with these names"
+					}
+				},
+				"required": ["action"]
+			}
 		}
 	]
 
@@ -264,6 +316,8 @@ func execute(tool_name: String, args: Dictionary) -> Dictionary:
 			return _execute_gridmap(args)
 		"multimesh":
 			return _execute_multimesh(args)
+		"mesh_library":
+			return _execute_mesh_library(args)
 		_:
 			return _error("Unknown tool: %s" % tool_name)
 
@@ -1022,3 +1076,181 @@ func _clear_multimesh(path: String) -> Dictionary:
 	return _success({
 		"path": path
 	}, "MultiMesh cleared")
+
+
+# ==================== MESH LIBRARY ====================
+
+func _execute_mesh_library(args: Dictionary) -> Dictionary:
+	var action = args.get("action", "")
+
+	match action:
+		"export_from_scene":
+			var scene_path = str(args.get("scene_path", ""))
+			if scene_path.is_empty():
+				return _error("scene_path is required")
+			return _export_mesh_library([scene_path], args)
+		"export_from_scenes":
+			var scene_paths = args.get("scene_paths", [])
+			if not scene_paths is Array or scene_paths.is_empty():
+				return _error("scene_paths is required")
+			return _export_mesh_library(scene_paths, args)
+		"get_info":
+			return _get_mesh_library_info(args.get("path", ""))
+		_:
+			return _error("Unknown action: %s" % action)
+
+
+func _export_mesh_library(scene_paths: Array, args: Dictionary) -> Dictionary:
+	var output_path = str(args.get("output_path", ""))
+	if output_path.is_empty():
+		return _error("output_path is required")
+
+	if not output_path.begins_with("res://"):
+		output_path = "res://" + output_path
+	if not output_path.ends_with(".tres") and not output_path.ends_with(".res"):
+		output_path += ".tres"
+
+	var item_filter: Array = args.get("mesh_item_names", [])
+	var use_filter = item_filter.size() > 0
+
+	var library = MeshLibrary.new()
+	var item_id := 0
+	var skipped: Array[String] = []
+	var per_scene: Array[Dictionary] = []
+
+	for raw_path in scene_paths:
+		var scene_path = str(raw_path)
+		if scene_path.is_empty():
+			continue
+
+		if not scene_path.begins_with("res://"):
+			scene_path = "res://" + scene_path
+
+		if not FileAccess.file_exists(scene_path):
+			return _error("Scene not found: %s" % scene_path)
+
+		var packed = load(scene_path)
+		if not packed or not packed is PackedScene:
+			return _error("Failed to load scene: %s" % scene_path)
+
+		var root = packed.instantiate()
+		if not root:
+			return _error("Failed to instantiate scene: %s" % scene_path)
+
+		var added := 0
+
+		for child in root.get_children():
+			var node_name = str(child.name)
+
+			if use_filter and not (node_name in item_filter):
+				continue
+
+			var mesh_instance = _find_mesh_instance(child)
+			if not mesh_instance or not mesh_instance.mesh:
+				skipped.append("%s/%s" % [scene_path, node_name])
+				continue
+
+			library.create_item(item_id)
+			library.set_item_name(item_id, node_name)
+			library.set_item_mesh(item_id, mesh_instance.mesh)
+			library.set_item_preview(item_id, mesh_instance.mesh)
+
+			for collision_child in child.get_children():
+				if collision_child is CollisionShape3D and collision_child.shape:
+					library.set_item_shapes(item_id, [collision_child.shape])
+					break
+
+			item_id += 1
+			added += 1
+
+		root.free()
+		per_scene.append({"scene": scene_path, "items": added})
+
+	if item_id == 0:
+		return _error("No valid meshes found in the supplied scene(s)", {"skipped": skipped})
+
+	_ensure_resource_dir(output_path)
+
+	var error = ResourceSaver.save(library, output_path)
+	if error != OK:
+		return _error("Failed to save MeshLibrary: %s" % error_string(error))
+
+	var fs = _get_filesystem()
+	if fs:
+		fs.scan()
+
+	var result = {
+		"output_path": output_path,
+		"absolute_path": ProjectSettings.globalize_path(output_path),
+		"item_count": item_id,
+		"scenes": per_scene
+	}
+
+	if not skipped.is_empty():
+		result["skipped"] = skipped
+
+	return _success(result, "MeshLibrary exported with %d item(s)" % item_id)
+
+
+func _find_mesh_instance(node: Node) -> MeshInstance3D:
+	if node is MeshInstance3D:
+		return node
+
+	for child in node.get_children():
+		var found = _find_mesh_instance(child)
+		if found:
+			return found
+
+	return null
+
+
+func _get_mesh_library_info(path: String) -> Dictionary:
+	if path.is_empty():
+		return _error("Path is required")
+
+	if not path.begins_with("res://"):
+		path = "res://" + path
+
+	if not ResourceLoader.exists(path):
+		return _error("MeshLibrary not found: %s" % path)
+
+	var library = load(path)
+	if not library or not library is MeshLibrary:
+		return _error("Not a MeshLibrary resource: %s" % path)
+
+	var items: Array[Dictionary] = []
+
+	for id in library.get_item_list():
+		var mesh = library.get_item_mesh(id)
+		var mesh_path := ""
+		if mesh:
+			mesh_path = str(mesh.resource_path) if not str(mesh.resource_path).is_empty() else "<built-in>"
+
+		# get_item_shapes() returns a flat [Shape3D, Transform3D, ...] array
+		var shape_count := 0
+		for entry in library.get_item_shapes(id):
+			if entry is Shape3D:
+				shape_count += 1
+
+		items.append({
+			"id": id,
+			"name": str(library.get_item_name(id)),
+			"mesh": mesh_path,
+			"surface_count": mesh.get_surface_count() if mesh else 0,
+			"shape_count": shape_count
+		})
+
+	return _success({
+		"path": path,
+		"count": items.size(),
+		"items": items
+	})
+
+
+func _ensure_resource_dir(path: String) -> void:
+	var dir_path = path.get_base_dir()
+	if dir_path.is_empty() or dir_path == "res://":
+		return
+
+	if not DirAccess.dir_exists_absolute(dir_path):
+		DirAccess.make_dir_recursive_absolute(dir_path)

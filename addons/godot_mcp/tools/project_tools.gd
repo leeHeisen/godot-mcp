@@ -16,17 +16,19 @@ ACTIONS:
 - get_settings: Get project settings
 - get_features: Get enabled project features
 - get_export_presets: Get configured export presets
+- get_structure: Count files by category (scenes/scripts/assets/...) in the project
 
 EXAMPLES:
 - Get project info: {"action": "get_info"}
 - Get settings: {"action": "get_settings"}
+- Get file statistics: {"action": "get_structure"}
 - Get specific setting: {"action": "get_settings", "setting": "application/config/name"}""",
 			"inputSchema": {
 				"type": "object",
 				"properties": {
 					"action": {
 						"type": "string",
-						"enum": ["get_info", "get_settings", "get_features", "get_export_presets"],
+						"enum": ["get_info", "get_settings", "get_features", "get_export_presets", "get_structure"],
 						"description": "Info action"
 					},
 					"setting": {
@@ -186,6 +188,60 @@ EXAMPLES:
 				},
 				"required": ["action"]
 			}
+		},
+		{
+			"name": "discovery",
+			"description": """PROJECT DISCOVERY: Find Godot projects on disk.
+Migrated from the bradypp/godot-mcp "list_projects" tool.
+
+ACTIONS:
+- find_projects: Scan a directory for folders containing project.godot
+- get_project_file: Read the raw project.godot of a directory
+
+NOTES:
+- Unlike filesystem_search (which only sees res:// / user://), this tool can walk
+  any absolute path on the machine, so it can discover sibling projects.
+- Directories starting with "." plus node_modules and (optionally) addons are skipped.
+
+EXAMPLES:
+- Scan a workspace: {"action": "find_projects", "directory": "D:/Projects", "recursive": true, "max_depth": 3}
+- Non-recursive: {"action": "find_projects", "directory": "D:/Projects", "recursive": false}
+- Read the project file: {"action": "get_project_file", "path": "D:/Projects/MyGame"}""",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"action": {
+						"type": "string",
+						"enum": ["find_projects", "get_project_file"],
+						"description": "Discovery action"
+					},
+					"directory": {
+						"type": "string",
+						"description": "Absolute directory to scan (or res:// / user://)"
+					},
+					"path": {
+						"type": "string",
+						"description": "Project directory for get_project_file"
+					},
+					"recursive": {
+						"type": "boolean",
+						"description": "Scan subdirectories (default: true)"
+					},
+					"max_depth": {
+						"type": "integer",
+						"description": "Maximum recursion depth (default: 4)"
+					},
+					"limit": {
+						"type": "integer",
+						"description": "Maximum number of projects to return (default: 100)"
+					},
+					"include_addons": {
+						"type": "boolean",
+						"description": "Scan inside addons/ folders (default: false)"
+					}
+				},
+				"required": ["action"]
+			}
 		}
 	]
 
@@ -200,6 +256,8 @@ func execute(tool_name: String, args: Dictionary) -> Dictionary:
 			return _execute_input(args)
 		"autoload":
 			return _execute_autoload(args)
+		"discovery":
+			return _execute_discovery(args)
 		_:
 			return _error("Unknown tool: %s" % tool_name)
 
@@ -218,6 +276,8 @@ func _execute_info(args: Dictionary) -> Dictionary:
 			return _get_features()
 		"get_export_presets":
 			return _get_export_presets()
+		"get_structure":
+			return _get_project_structure()
 		_:
 			return _error("Unknown action: %s" % action)
 
@@ -697,3 +757,234 @@ func _remove_autoload(name: String) -> Dictionary:
 		return _error("Failed to save project settings")
 
 	return _success({"name": name}, "Autoload removed")
+
+
+# ==================== STRUCTURE ====================
+
+const IMAGE_AND_AUDIO_EXTENSIONS := [
+	"png", "jpg", "jpeg", "webp", "svg", "bmp", "tga",
+	"ttf", "otf", "wav", "mp3", "ogg", "glb", "gltf", "obj", "fbx"
+]
+
+const RESOURCE_EXTENSIONS := ["tres", "res", "material", "theme", "anim"]
+const SCRIPT_EXTENSIONS := ["gd", "cs", "gdscript"]
+const SCENE_EXTENSIONS := ["tscn", "scn"]
+const SHADER_EXTENSIONS := ["gdshader", "shader"]
+
+
+func _get_project_structure() -> Dictionary:
+	var stats = _scan_project_structure("res://", 0)
+	stats["project_path"] = ProjectSettings.globalize_path("res://")
+	return _success(stats)
+
+
+func _scan_project_structure(dir_path: String, depth: int) -> Dictionary:
+	var stats = {
+		"scenes": 0,
+		"scripts": 0,
+		"assets": 0,
+		"shaders": 0,
+		"resources": 0,
+		"other": 0,
+		"files": 0,
+		"bytes": 0
+	}
+
+	# Guard against runaway recursion on deeply nested or looping structures
+	if depth > 32:
+		return stats
+
+	var dir = DirAccess.open(dir_path)
+	if not dir:
+		return stats
+
+	dir.list_dir_begin()
+	var entry = dir.get_next()
+
+	while entry != "":
+		if entry.begins_with("."):
+			entry = dir.get_next()
+			continue
+
+		var full_path = dir_path.path_join(entry)
+
+		if dir.current_is_dir():
+			var sub_stats = _scan_project_structure(full_path, depth + 1)
+			for key in sub_stats:
+				stats[key] += sub_stats[key]
+		else:
+			var extension = full_path.get_extension().to_lower()
+			stats["files"] += 1
+
+			if extension in SCENE_EXTENSIONS:
+				stats["scenes"] += 1
+			elif extension in SCRIPT_EXTENSIONS:
+				stats["scripts"] += 1
+			elif extension in IMAGE_AND_AUDIO_EXTENSIONS:
+				stats["assets"] += 1
+			elif extension in SHADER_EXTENSIONS:
+				stats["shaders"] += 1
+			elif extension in RESOURCE_EXTENSIONS:
+				stats["resources"] += 1
+			else:
+				stats["other"] += 1
+
+			stats["bytes"] += _get_file_size(full_path)
+
+		entry = dir.get_next()
+
+	dir.list_dir_end()
+
+	return stats
+
+
+func _get_file_size(path: String) -> int:
+	var file = FileAccess.open(path, FileAccess.READ)
+	if not file:
+		return 0
+	var size = file.get_length()
+	file.close()
+	return size
+
+
+# ==================== DISCOVERY ====================
+
+func _execute_discovery(args: Dictionary) -> Dictionary:
+	var action = args.get("action", "")
+
+	match action:
+		"find_projects":
+			return _find_projects(args)
+		"get_project_file":
+			return _get_project_file(str(args.get("path", "")))
+		_:
+			return _error("Unknown action: %s" % action)
+
+
+func _find_projects(args: Dictionary) -> Dictionary:
+	var directory = str(args.get("directory", ""))
+	if directory.is_empty():
+		return _error("directory is required")
+
+	var abs_dir = _resolve_absolute_dir(directory)
+	if abs_dir.is_empty():
+		return _error("Invalid directory: %s" % directory)
+	if not DirAccess.dir_exists_absolute(abs_dir):
+		return _error("Directory not found: %s" % abs_dir)
+
+	var recursive: bool = args.get("recursive", true)
+	var max_depth: int = int(args.get("max_depth", 4))
+	var limit: int = int(args.get("limit", 100))
+	var include_addons: bool = args.get("include_addons", false)
+
+	var results: Array[Dictionary] = []
+	_scan_for_projects(abs_dir, 0, recursive, max_depth, limit, include_addons, results)
+
+	var current_dir = ProjectSettings.globalize_path("res://").simplify_path()
+	for project in results:
+		project["is_current"] = str(project["path"]).simplify_path() == current_dir
+
+	return _success({
+		"directory": abs_dir,
+		"recursive": recursive,
+		"count": results.size(),
+		"projects": results
+	})
+
+
+func _scan_for_projects(
+	dir_path: String,
+	depth: int,
+	recursive: bool,
+	max_depth: int,
+	limit: int,
+	include_addons: bool,
+	results: Array[Dictionary]
+) -> void:
+	if results.size() >= limit or depth > max_depth:
+		return
+
+	if FileAccess.file_exists(dir_path.path_join("project.godot")):
+		results.append(_describe_project(dir_path))
+
+	if not recursive or results.size() >= limit:
+		return
+
+	var dir = DirAccess.open(dir_path)
+	if not dir:
+		return
+
+	dir.list_dir_begin()
+	var entry = dir.get_next()
+
+	while entry != "" and results.size() < limit:
+		if entry.begins_with("."):
+			entry = dir.get_next()
+			continue
+
+		if dir.current_is_dir():
+			var skip = entry == "node_modules" or (entry == "addons" and not include_addons)
+			if not skip:
+				_scan_for_projects(
+					dir_path.path_join(entry), depth + 1, recursive, max_depth, limit, include_addons, results
+				)
+
+		entry = dir.get_next()
+
+	dir.list_dir_end()
+
+
+func _describe_project(abs_dir: String) -> Dictionary:
+	var project_file = abs_dir.path_join("project.godot")
+	var project_name = abs_dir.get_file()
+	var main_scene := ""
+	var features: Array[String] = []
+
+	var config = ConfigFile.new()
+	if config.load(project_file) == OK:
+		if config.has_section_key("application", "config/name"):
+			project_name = str(config.get_value("application", "config/name"))
+		if config.has_section_key("application", "run/main_scene"):
+			main_scene = str(config.get_value("application", "run/main_scene"))
+		if config.has_section_key("application", "config/features"):
+			var raw_features = config.get_value("application", "config/features", PackedStringArray())
+			if raw_features is PackedStringArray or raw_features is Array:
+				for feature in raw_features:
+					features.append(str(feature))
+
+	return {
+		"path": abs_dir,
+		"name": project_name,
+		"project_file": project_file,
+		"main_scene": main_scene,
+		"features": features
+	}
+
+
+func _get_project_file(path: String) -> Dictionary:
+	var abs_dir = _resolve_absolute_dir(path) if not path.is_empty() else ProjectSettings.globalize_path("res://")
+	if abs_dir.is_empty():
+		return _error("Invalid path: %s" % path)
+
+	var project_file = abs_dir.path_join("project.godot")
+	if not FileAccess.file_exists(project_file):
+		return _error("project.godot not found in: %s" % abs_dir)
+
+	var file = FileAccess.open(project_file, FileAccess.READ)
+	if not file:
+		return _error("Failed to open: %s" % project_file)
+
+	var content = file.get_as_text()
+	file.close()
+
+	return _success({
+		"path": project_file,
+		"directory": abs_dir,
+		"content": content
+	})
+
+
+func _resolve_absolute_dir(path: String) -> String:
+	if path.begins_with("res://") or path.begins_with("user://"):
+		return ProjectSettings.globalize_path(path).simplify_path()
+	return path.simplify_path()

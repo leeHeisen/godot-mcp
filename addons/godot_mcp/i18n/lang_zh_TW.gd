@@ -22,6 +22,8 @@ const TRANSLATIONS: Dictionary = {
 	"port": "連接埠:",
 	"auto_start": "自動啟動",
 	"debug_log": "除錯日誌",
+	"read_only": "唯讀模式",
+	"read_only_hint": "僅暴露不會修改專案檔案與設定的唯讀操作，寫入操作會被拒絕",
 	"btn_start": "啟動",
 	"btn_stop": "停止",
 

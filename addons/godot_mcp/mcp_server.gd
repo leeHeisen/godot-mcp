@@ -15,6 +15,10 @@ const EditorTools = preload("res://addons/godot_mcp/tools/editor_tools.gd")
 const DebugTools = preload("res://addons/godot_mcp/tools/debug_tools.gd")
 const FileSystemTools = preload("res://addons/godot_mcp/tools/filesystem_tools.gd")
 const AnimationTools = preload("res://addons/godot_mcp/tools/animation_tools.gd")
+const UidTools = preload("res://addons/godot_mcp/tools/uid_tools.gd")
+
+# Read-only policy (migrated from bradypp/godot-mcp READ_ONLY_MODE)
+const ReadOnlyPolicy = preload("res://addons/godot_mcp/readonly_policy.gd")
 
 # Tool imports - Visual
 const MaterialTools = preload("res://addons/godot_mcp/tools/material_tools.gd")
@@ -47,6 +51,7 @@ var _port: int = 3000
 var _host: String = "127.0.0.1"
 var _running: bool = false
 var _debug_mode: bool = false
+var _read_only: bool = false
 var _clients: Array[StreamPeerTCP] = []
 var _pending_data: Dictionary = {}  # client -> accumulated data
 
@@ -119,6 +124,12 @@ func start() -> bool:
 	if _running:
 		return true
 
+	# _enter_tree() can call start() before _ready() has run (e.g. during the
+	# editor's first filesystem scan, or in --headless), so make sure the
+	# socket exists before listening instead of calling listen() on null.
+	if _tcp_server == null:
+		_tcp_server = TCPServer.new()
+
 	var error = _tcp_server.listen(_port, _host)
 	if error != OK:
 		push_error("[MCP] Failed to start server on port %d: %s" % [_port, error_string(error)])
@@ -156,6 +167,14 @@ func set_port(port: int) -> void:
 
 func set_debug_mode(debug: bool) -> void:
 	_debug_mode = debug
+
+
+func set_read_only(read_only: bool) -> void:
+	_read_only = read_only
+
+
+func is_read_only() -> bool:
+	return _read_only
 
 
 func get_connection_count() -> int:
@@ -208,6 +227,7 @@ func _register_tools() -> void:
 	_tools["debug"] = DebugTools.new()
 	_tools["filesystem"] = FileSystemTools.new()
 	_tools["animation"] = AnimationTools.new()
+	_tools["uid"] = UidTools.new()
 
 	# Register all tool executors - Visual
 	_tools["material"] = MaterialTools.new()
@@ -476,17 +496,62 @@ func _handle_tools_list(_params: Dictionary, id) -> Dictionary:
 
 	for tool_def in _tool_definitions:
 		# Only include enabled tools
-		if is_tool_enabled(tool_def["name"]):
-			tools_list.append({
-				"name": tool_def["name"],
-				"description": tool_def.get("description", ""),
-				"inputSchema": tool_def.get("inputSchema", {
-					"type": "object",
-					"properties": {}
-				})
+		if not is_tool_enabled(tool_def["name"]):
+			continue
+
+		var exposed = _apply_read_only_policy(tool_def)
+		if exposed.is_empty():
+			continue
+
+		tools_list.append({
+			"name": exposed["name"],
+			"description": exposed.get("description", ""),
+			"inputSchema": exposed.get("inputSchema", {
+				"type": "object",
+				"properties": {}
 			})
+		})
 
 	return _create_json_rpc_response({"tools": tools_list}, id)
+
+
+func _apply_read_only_policy(tool_def: Dictionary) -> Dictionary:
+	"""Return the tool definition as it should be exposed to clients.
+
+	When read-only mode is off the definition is returned untouched. When it is
+	on, tools without any safe action are dropped entirely and the "action" enum
+	is narrowed down to the actions that are allowed.
+	"""
+	if not _read_only:
+		return tool_def
+
+	var tool_name = tool_def.get("name", "")
+	if not ReadOnlyPolicy.is_tool_allowed(tool_name):
+		return {}
+
+	var allowed: Array = ReadOnlyPolicy.allowed_actions(tool_name)
+	if "*" in allowed:
+		return tool_def
+
+	var copy = tool_def.duplicate(true)
+	var schema = copy.get("inputSchema", {})
+	var properties = schema.get("properties", {})
+	var action_schema = properties.get("action", null)
+
+	if not (action_schema is Dictionary) or not action_schema.has("enum"):
+		# Cannot express a narrowed contract for this tool, so hide it entirely
+		return {}
+
+	var narrowed: Array = []
+	for action in action_schema["enum"]:
+		if action in allowed:
+			narrowed.append(action)
+
+	if narrowed.is_empty():
+		return {}
+
+	action_schema["enum"] = narrowed
+	return copy
 
 
 func _handle_tools_call(params: Dictionary, id) -> Dictionary:
@@ -501,6 +566,16 @@ func _handle_tools_call(params: Dictionary, id) -> Dictionary:
 	# Check if tool is enabled
 	if not is_tool_enabled(tool_name):
 		return _create_tool_response({"success": false, "error": "Tool '%s' is disabled" % tool_name}, id)
+
+	# Enforce the read-only policy (migrated from bradypp READ_ONLY_MODE)
+	if _read_only and not ReadOnlyPolicy.is_action_allowed(tool_name, arguments.get("action", null)):
+		return _create_tool_response({
+			"success": false,
+			"error": "Tool '%s' is blocked in read-only mode" % tool_name,
+			"hints": [
+				"Disable \"Read-only mode\" in the GodotMCP dock (Server tab) to allow write operations."
+			]
+		}, id)
 
 	# Parse tool name: category_toolname
 	var parts = tool_name.split("_", true, 1)

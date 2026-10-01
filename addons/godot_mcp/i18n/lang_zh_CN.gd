@@ -22,6 +22,8 @@ const TRANSLATIONS: Dictionary = {
 	"port": "端口:",
 	"auto_start": "自动启动",
 	"debug_log": "调试日志",
+	"read_only": "只读模式",
+	"read_only_hint": "仅暴露不会修改项目文件与设置的只读操作，写操作会被拒绝",
 	"btn_start": "启动",
 	"btn_stop": "停止",
 

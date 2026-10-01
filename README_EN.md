@@ -318,6 +318,63 @@ AI: Sure, let me create the scene for you...
 |-----------|-------------|
 | `group` | Node group management |
 
+## Migrated Tools (from bradypp/godot-mcp)
+
+These tools were ported from [bradypp/godot-mcp](https://github.com/bradypp/godot-mcp)
+to close the feature gaps against this plugin. Names below are the real
+`<category>_<tool>` identifiers, with their supported `action` values.
+
+### UID Tools (Godot 4.4+)
+
+| Tool | Actions | Description |
+|------|---------|-------------|
+| `uid_query` | `get`, `lookup`, `list`, `verify` | Read a resource UID, resolve a UID back to its path, list UIDs in a directory, find resources with no UID |
+| `uid_update` | `resave_file`, `resave_project`, `scan_missing` | Re-save resources so their UIDs are (re)generated |
+
+The singleton API changed between releases (`get_id_for_path` on 4.4,
+`path_to_uid` / `uid_to_path` on 4.5+), so both shapes are detected at runtime.
+On builds without `ResourceUID` the tools fall back to `.uid` sidecar files and
+`uid://` entries in resource headers; `lookup` then falls back to a project scan.
+
+### Project / Scene / Debug Tools
+
+| Tool | Actions | Description |
+|------|---------|-------------|
+| `geometry_mesh_library` | `export_from_scene`, `export_from_scenes`, `get_info` | Build a `MeshLibrary` resource from one or more 3D scenes (for `GridMap`) |
+| `project_discovery` | `find_projects`, `get_project_file` | Scan any absolute directory for folders containing `project.godot`; read a raw `project.godot` |
+| `project_info` | `get_structure` *(new action)* | Count files by category (scenes/scripts/assets/shaders/resources) plus total size |
+| `editor_launch` | `open_project`, `get_executable`, `show_in_file_manager` | Open another project in a new editor process using the running editor binary |
+| `debug_output` | `read_log`, `list_logs`, `get_log_path` | Read `user://logs/godot.log` with `errors_only` / `pattern` / `lines` filters |
+
+`scene_management` also gained an explicit `path` (and `overwrite`) for its `create`
+action, matching bradypp's `create_scene`:
+
+```json
+{"action": "create", "root_type": "Node2D", "name": "Level1", "path": "res://scenes/levels/level_1.tscn"}
+```
+
+### Read-Only Mode
+
+The **Server** tab has a **Read-only mode** checkbox (persisted in
+`user://godot_mcp_settings.json`), equivalent to bradypp's `READ_ONLY_MODE`.
+
+While it is enabled, anything that would modify project files, resources, scenes,
+nodes or project settings is denied:
+
+- `tools/list` only advertises tools with at least one safe action, and each tool's
+  `action` enum is narrowed to the allowed actions.
+- `tools/call` rejects blocked actions even when a client calls them directly.
+- The policy is an allow-list (`addons/godot_mcp/readonly_policy.gd`), so a tool or
+  action that is not listed is denied.
+
+Launching processes and changing editor view state stay available, matching the
+behaviour of the original `READ_ONLY_MODE`.
+
+> **Note on `get_debug_output`:** bradypp captures the stdout/stderr pipes of a Godot
+> process it launches itself. This plugin runs inside the editor and cannot attach to
+> another process's pipes, so `debug_output` reads the log file Godot writes instead
+> (`user://logs/godot.log`, including rotated `.1` / `.2` files).
+
 ## FAQ
 
 ### Q: Server won't start?

@@ -22,6 +22,8 @@ const TRANSLATIONS: Dictionary = {
 	"port": "Puerto:",
 	"auto_start": "Inicio automático",
 	"debug_log": "Registro de depuración",
+	"read_only": "Modo solo lectura",
+	"read_only_hint": "Expone solo herramientas que no modifican archivos ni ajustes del proyecto. Las acciones de escritura se rechazan.",
 	"btn_start": "Iniciar",
 	"btn_stop": "Detener",
 

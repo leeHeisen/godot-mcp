@@ -318,6 +318,56 @@ AI：好的，我来为你创建场景...
 |--------|------|
 | `group` | 节点分组管理 |
 
+## 迁移自 bradypp/godot-mcp 的工具
+
+以下能力移植自 [bradypp/godot-mcp](https://github.com/bradypp/godot-mcp)，用于补齐本插件
+相对它的功能缺口。名称是实际注册的 `<分类>_<工具>` 标识，并列出支持的 `action`。
+
+### UID 工具（需 Godot 4.4+）
+
+| 工具名 | Actions | 描述 |
+|--------|---------|------|
+| `uid_query` | `get`、`lookup`、`list`、`verify` | 读取资源 UID、由 UID 反查路径、列出目录内所有 UID、找出没有 UID 的资源 |
+| `uid_update` | `resave_file`、`resave_project`、`scan_missing` | 重新保存资源以（重新）生成 UID |
+
+ResourceUID 的接口在版本间有变化（4.4 是 `get_id_for_path`，4.5+ 是 `path_to_uid` /
+`uid_to_path`），运行时会自动探测两种形态。若该版本没有 `ResourceUID`，会自动回退到读取
+`.uid` 边车文件与资源头部的 `uid://`；`lookup` 还会回退到扫描工程。
+
+### 项目 / 场景 / 调试工具
+
+| 工具名 | Actions | 描述 |
+|--------|---------|------|
+| `geometry_mesh_library` | `export_from_scene`、`export_from_scenes`、`get_info` | 把一个或多个 3D 场景导出成 `MeshLibrary`（供 `GridMap` 使用） |
+| `project_discovery` | `find_projects`、`get_project_file` | 扫描任意绝对路径目录，找出所有含 `project.godot` 的工程；也可读取原始 `project.godot` |
+| `project_info` | `get_structure`（新增动作） | 统计各类文件数量（场景/脚本/资源/着色器/其他）与总体积 |
+| `editor_launch` | `open_project`、`get_executable`、`show_in_file_manager` | 用当前编辑器程序打开另一个工程，或在系统文件管理器中定位文件 |
+| `debug_output` | `read_log`、`list_logs`、`get_log_path` | 读取 `user://logs/godot.log`，支持 `errors_only` / `pattern` / `lines` 过滤 |
+
+`scene_management` 的 `create` 动作也新增了显式 `path` 与 `overwrite` 参数，对齐 bradypp 的
+`create_scene`：
+
+```json
+{"action": "create", "root_type": "Node2D", "name": "Level1", "path": "res://scenes/levels/level_1.tscn"}
+```
+
+### 只读模式
+
+**Server** 面板新增 **只读模式** 勾选框（保存于 `user://godot_mcp_settings.json`），等价于
+bradypp 的 `READ_ONLY_MODE`。
+
+开启后，任何会修改工程文件、资源、场景、节点或项目设置的操作都会被拒绝：
+
+- `tools/list` 只暴露至少含一个安全动作的工具，并把每个工具的 `action` 枚举收窄到允许的动作；
+- `tools/call` 会直接拒绝被屏蔽的动作，即使客户端绕过枚举直接调用；
+- 策略是白名单（`addons/godot_mcp/readonly_policy.gd`），未列出的工具或动作一律拒绝。
+
+启动进程和切换编辑器视图状态仍然可用，与原 `READ_ONLY_MODE` 的行为保持一致。
+
+> **关于 `get_debug_output`：** bradypp 是自己拉起 Godot 进程并抓取它的 stdout/stderr 管道。
+> 本插件运行在编辑器进程内部，无法连接到另一个进程的管道，因此 `debug_output` 改为读取
+> Godot 自己写出的日志文件（`user://logs/godot.log`，含轮转的 `.1` / `.2`）。
+
 ## 常见问题
 
 ### Q: 服务器无法启动？

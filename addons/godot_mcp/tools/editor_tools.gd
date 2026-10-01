@@ -302,6 +302,42 @@ EXAMPLES:
 				},
 				"required": ["action"]
 			}
+		},
+		{
+			"name": "launch",
+			"description": """LAUNCH: Open another Godot project or reveal a path in the OS.
+Migrated from the bradypp/godot-mcp "launch_editor" tool.
+
+ACTIONS:
+- open_project: Launch a new Godot editor process for another project
+- get_executable: Show which Godot executable is running this editor
+- show_in_file_manager: Reveal a file or folder in the OS file manager
+
+NOTES:
+- The editor binary is taken from OS.get_executable_path(), so the launched
+  editor is the exact same build that is running this plugin.
+- The current project is deliberately not restricted here: the path may be any
+  folder that contains a project.godot.
+
+EXAMPLES:
+- Open another project: {"action": "open_project", "path": "D:/Projects/OtherGame"}
+- Inspect the binary: {"action": "get_executable"}
+- Reveal a folder: {"action": "show_in_file_manager", "path": "res://scenes"}""",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"action": {
+						"type": "string",
+						"enum": ["open_project", "get_executable", "show_in_file_manager"],
+						"description": "Launch action"
+					},
+					"path": {
+						"type": "string",
+						"description": "Project directory (open_project) or path to reveal"
+					}
+				},
+				"required": ["action"]
+			}
 		}
 	]
 
@@ -322,6 +358,8 @@ func execute(tool_name: String, args: Dictionary) -> Dictionary:
 			return _execute_filesystem(args)
 		"plugin":
 			return _execute_plugin(args)
+		"launch":
+			return _execute_launch(args)
 		_:
 			return _error("Unknown tool: %s" % tool_name)
 
@@ -1196,3 +1234,81 @@ func _disable_plugin(ei: EditorInterface, plugin_name: String) -> Dictionary:
 		"plugin": plugin_name,
 		"enabled": false
 	}, "Plugin disabled")
+
+
+# ==================== LAUNCH ====================
+
+func _execute_launch(args: Dictionary) -> Dictionary:
+	var action = args.get("action", "")
+
+	match action:
+		"open_project":
+			return _launch_project_editor(str(args.get("path", "")))
+		"get_executable":
+			return _get_editor_executable()
+		"show_in_file_manager":
+			return _reveal_in_file_manager(str(args.get("path", "")))
+		_:
+			return _error("Unknown action: %s" % action)
+
+
+func _launch_project_editor(path: String) -> Dictionary:
+	if path.is_empty():
+		return _error("Path is required")
+
+	var abs_dir = _resolve_absolute_path(path)
+	if abs_dir.is_empty():
+		return _error("Invalid path: %s" % path)
+
+	if not DirAccess.dir_exists_absolute(abs_dir):
+		return _error("Directory not found: %s" % abs_dir)
+
+	if not FileAccess.file_exists(abs_dir.path_join("project.godot")):
+		return _error("Not a Godot project (project.godot missing): %s" % abs_dir)
+
+	var executable = OS.get_executable_path()
+	var pid = OS.create_process(executable, ["-e", "--path", abs_dir])
+
+	if pid <= 0:
+		return _error("Failed to launch the Godot editor for: %s" % abs_dir)
+
+	return _success({
+		"path": abs_dir,
+		"pid": pid,
+		"executable": executable
+	}, "Godot editor launched for %s" % abs_dir)
+
+
+func _get_editor_executable() -> Dictionary:
+	var version_info = Engine.get_version_info()
+
+	return _success({
+		"executable": OS.get_executable_path(),
+		"version": str(version_info.get("string", "")),
+		"major": int(version_info.get("major", 0)),
+		"minor": int(version_info.get("minor", 0)),
+		"platform": OS.get_name()
+	})
+
+
+func _reveal_in_file_manager(path: String) -> Dictionary:
+	if path.is_empty():
+		return _error("Path is required")
+
+	var abs_path = _resolve_absolute_path(path)
+	if abs_path.is_empty():
+		return _error("Invalid path: %s" % path)
+
+	if not FileAccess.file_exists(abs_path) and not DirAccess.dir_exists_absolute(abs_path):
+		return _error("Path not found: %s" % abs_path)
+
+	# The return type varies across 4.x releases (void vs Error); ignore it.
+	var _shell_result = OS.shell_show_in_file_manager(abs_path)
+
+	return _success({"path": abs_path}, "Opened in the OS file manager")
+
+
+func _resolve_absolute_path(path: String) -> String:
+	if path.begins_with("res://") or path.begins_with("user://"):
+		return ProjectSettings.globalize_path(path).simplify_path()
+	return path.simplify_path()

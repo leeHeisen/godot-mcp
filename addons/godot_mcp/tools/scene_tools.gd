@@ -30,7 +30,8 @@ EXAMPLES:
 - Get current scene: {"action": "get_current"}
 - Open scene: {"action": "open", "path": "res://scenes/main.tscn"}
 - Save scene: {"action": "save"}
-- Create new 2D scene: {"action": "create", "root_type": "Node2D", "name": "Level1"}""",
+- Create new 2D scene: {"action": "create", "root_type": "Node2D", "name": "Level1"}
+- Create at an explicit path: {"action": "create", "root_type": "Node2D", "name": "Level1", "path": "res://scenes/levels/level_1.tscn"}""",
 			"inputSchema": {
 				"type": "object",
 				"properties": {
@@ -41,7 +42,7 @@ EXAMPLES:
 					},
 					"path": {
 						"type": "string",
-						"description": "Scene file path (for open, save_as)"
+						"description": "Scene file path (for open, save_as, and the destination of create)"
 					},
 					"root_type": {
 						"type": "string",
@@ -51,6 +52,10 @@ EXAMPLES:
 					"name": {
 						"type": "string",
 						"description": "Scene name (for create)"
+					},
+					"overwrite": {
+						"type": "boolean",
+						"description": "Allow create to replace an existing scene file (default: false)"
 					}
 				},
 				"required": ["action"]
@@ -158,7 +163,12 @@ func _execute_management(args: Dictionary) -> Dictionary:
 		"save_as":
 			return _save_scene_as(args.get("path", ""))
 		"create":
-			return _create_scene(args.get("root_type", "Node"), args.get("name", "NewScene"))
+			return _create_scene(
+				args.get("root_type", "Node"),
+				args.get("name", "NewScene"),
+				args.get("path", ""),
+				args.get("overwrite", false)
+			)
 		"close":
 			return _close_scene()
 		"reload":
@@ -296,10 +306,36 @@ func _save_scene_as(path: String) -> Dictionary:
 	return _success({"path": path}, "Scene saved as: %s" % path)
 
 
-func _create_scene(root_type: String, scene_name: String) -> Dictionary:
+func _create_scene(
+	root_type: String,
+	scene_name: String,
+	scene_path: String = "",
+	overwrite: bool = false
+) -> Dictionary:
 	var ei = _get_editor_interface()
 	if not ei:
 		return _error("Editor interface not available")
+
+	# Work out where the scene should be written
+	var target_path = scene_path
+	if target_path.is_empty():
+		target_path = "res://%s.tscn" % scene_name.to_lower().replace(" ", "_")
+	else:
+		if not target_path.begins_with("res://"):
+			target_path = "res://" + target_path
+		if not target_path.ends_with(".tscn"):
+			target_path += ".tscn"
+
+	if FileAccess.file_exists(target_path) and not overwrite:
+		return _error("Scene already exists: %s" % target_path, {
+			"hint": "Pass overwrite=true to replace it, or choose a different path."
+		})
+
+	var target_dir = target_path.get_base_dir()
+	if target_dir != "res://" and not DirAccess.dir_exists_absolute(target_dir):
+		var dir_error = DirAccess.make_dir_recursive_absolute(target_dir)
+		if dir_error != OK:
+			return _error("Failed to create directory %s: %s" % [target_dir, error_string(dir_error)])
 
 	# Create root node based on type
 	var root: Node
@@ -323,22 +359,24 @@ func _create_scene(root_type: String, scene_name: String) -> Dictionary:
 	var packed_scene = PackedScene.new()
 	packed_scene.pack(root)
 
-	var temp_path = "res://%s.tscn" % scene_name.to_lower().replace(" ", "_")
-
-	var error = ResourceSaver.save(packed_scene, temp_path)
+	var error = ResourceSaver.save(packed_scene, target_path)
 	if error != OK:
 		root.queue_free()
 		return _error("Failed to create scene: %s" % error_string(error))
 
 	root.queue_free()
 
-	ei.open_scene_from_path(temp_path)
+	var fs = _get_filesystem()
+	if fs:
+		fs.scan()
+
+	ei.open_scene_from_path(target_path)
 
 	return _success({
-		"path": temp_path,
+		"path": target_path,
 		"root_type": root_type,
 		"name": scene_name
-	}, "Scene created: %s" % temp_path)
+	}, "Scene created: %s" % target_path)
 
 
 func _close_scene() -> Dictionary:

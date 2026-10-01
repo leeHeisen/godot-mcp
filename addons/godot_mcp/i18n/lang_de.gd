@@ -22,6 +22,8 @@ const TRANSLATIONS: Dictionary = {
 	"port": "Port:",
 	"auto_start": "Autostart",
 	"debug_log": "Debug-Protokoll",
+	"read_only": "Nur-Lese-Modus",
+	"read_only_hint": "Stellt nur Tools bereit, die keine Projektdateien oder Einstellungen verändern. Schreibaktionen werden abgelehnt.",
 	"btn_start": "Starten",
 	"btn_stop": "Stoppen",
 

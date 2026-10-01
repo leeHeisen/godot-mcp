@@ -128,6 +128,56 @@ EXAMPLES:
 				},
 				"required": ["action"]
 			}
+		},
+		{
+			"name": "output",
+			"description": """OUTPUT LOG: Read Godot's log file to inspect runtime errors.
+Approximates the bradypp/godot-mcp "get_debug_output" tool.
+
+ACTIONS:
+- read_log: Read the tail of user://logs/godot.log, optionally filtered
+- list_logs: List the files inside user://logs
+- get_log_path: Show where the log is written and whether it exists
+
+NOTES:
+- This plugin runs inside the editor, so it cannot capture the stdout/stderr
+  pipes of a separately launched game process. Instead it reads the log file
+  Godot itself writes (user://logs/godot.log, including rotated .1/.2 files).
+- Run the project once (or enable Debug > "Enable File Logging") so the log
+  exists before reading it.
+
+EXAMPLES:
+- Last 200 lines: {"action": "read_log"}
+- Errors only: {"action": "read_log", "errors_only": true}
+- Grep the log: {"action": "read_log", "pattern": "Player", "lines": 500}
+- Compare rotated logs: {"action": "list_logs"}""",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"action": {
+						"type": "string",
+						"enum": ["read_log", "list_logs", "get_log_path"],
+						"description": "Output action"
+					},
+					"path": {
+						"type": "string",
+						"description": "Log path override (default: user://logs/godot.log)"
+					},
+					"lines": {
+						"type": "integer",
+						"description": "Maximum number of trailing lines to return (default: 200, 0 = all)"
+					},
+					"pattern": {
+						"type": "string",
+						"description": "Only return lines containing this substring"
+					},
+					"errors_only": {
+						"type": "boolean",
+						"description": "Only return ERROR/SCRIPT ERROR/WARNING lines"
+					}
+				},
+				"required": ["action"]
+			}
 		}
 	]
 
@@ -142,6 +192,8 @@ func execute(tool_name: String, args: Dictionary) -> Dictionary:
 			return _execute_profiler(args)
 		"class_db":
 			return _execute_class_db(args)
+		"output":
+			return _execute_output(args)
 		_:
 			return _error("Unknown tool: %s" % tool_name)
 
@@ -463,3 +515,143 @@ func _class_exists(cls_name: String) -> Dictionary:
 		"class": cls_name,
 		"exists": ClassDB.class_exists(cls_name)
 	})
+
+
+# ==================== OUTPUT LOG ====================
+
+const DEFAULT_LOG_PATH := "user://logs/godot.log"
+
+
+func _execute_output(args: Dictionary) -> Dictionary:
+	var action = args.get("action", "")
+
+	match action:
+		"read_log":
+			return _read_log(args)
+		"list_logs":
+			return _list_logs()
+		"get_log_path":
+			return _get_log_path()
+		_:
+			return _error("Unknown action: %s" % action)
+
+
+func _read_log(args: Dictionary) -> Dictionary:
+	var log_path = str(args.get("path", ""))
+	if log_path.is_empty():
+		log_path = DEFAULT_LOG_PATH
+	if not log_path.begins_with("res://") and not log_path.begins_with("user://"):
+		log_path = "user://" + log_path
+
+	if not FileAccess.file_exists(log_path):
+		return _error("Log file not found: %s" % log_path, {
+			"absolute_path": ProjectSettings.globalize_path(log_path),
+			"hint": "Run the project once so Godot creates user://logs/godot.log."
+		})
+
+	var file = FileAccess.open(log_path, FileAccess.READ)
+	if not file:
+		return _error("Failed to open log file: %s" % log_path)
+
+	var content = file.get_as_text()
+	file.close()
+
+	var pattern = str(args.get("pattern", ""))
+	var errors_only: bool = args.get("errors_only", false)
+	var max_lines: int = int(args.get("lines", 200))
+
+	var all_lines = content.split("\n")
+	var matched: Array[String] = []
+
+	for line in all_lines:
+		if errors_only and not _is_error_line(line):
+			continue
+		if not pattern.is_empty() and not line.contains(pattern):
+			continue
+		matched.append(line)
+
+	var truncated := false
+	if max_lines > 0 and matched.size() > max_lines:
+		matched = matched.slice(matched.size() - max_lines)
+		truncated = true
+
+	return _success({
+		"log_path": log_path,
+		"absolute_path": ProjectSettings.globalize_path(log_path),
+		"total_lines": all_lines.size(),
+		"returned_lines": matched.size(),
+		"truncated": truncated,
+		"lines": matched
+	})
+
+
+func _list_logs() -> Dictionary:
+	var dir_path := "user://logs"
+
+	if not DirAccess.dir_exists_absolute(dir_path):
+		return _error("Log directory not found: %s" % dir_path, {
+			"absolute_path": ProjectSettings.globalize_path(dir_path)
+		})
+
+	var dir = DirAccess.open(dir_path)
+	if not dir:
+		return _error("Failed to open log directory: %s" % dir_path)
+
+	var files: Array[Dictionary] = []
+
+	dir.list_dir_begin()
+	var entry = dir.get_next()
+
+	while entry != "":
+		if not dir.current_is_dir() and not entry.begins_with("."):
+			var full_path = dir_path.path_join(entry)
+			files.append({
+				"name": entry,
+				"path": full_path,
+				"absolute_path": ProjectSettings.globalize_path(full_path),
+				"bytes": _log_file_size(full_path),
+				"modified_time": FileAccess.get_modified_time(full_path)
+			})
+		entry = dir.get_next()
+
+	dir.list_dir_end()
+
+	return _success({
+		"directory": dir_path,
+		"absolute_path": ProjectSettings.globalize_path(dir_path),
+		"count": files.size(),
+		"files": files
+	})
+
+
+func _get_log_path() -> Dictionary:
+	return _success({
+		"log_path": DEFAULT_LOG_PATH,
+		"absolute_path": ProjectSettings.globalize_path(DEFAULT_LOG_PATH),
+		"exists": FileAccess.file_exists(DEFAULT_LOG_PATH),
+		"user_data_dir": OS.get_user_data_dir()
+	})
+
+
+func _is_error_line(line: String) -> bool:
+	var trimmed = line.strip_edges()
+	if trimmed.is_empty():
+		return false
+
+	var upper = trimmed.to_upper()
+	return (
+		upper.begins_with("ERROR")
+		or upper.begins_with("SCRIPT ERROR")
+		or upper.begins_with("WARNING")
+		or upper.contains("ERROR:")
+		or upper.contains("WARNING:")
+	)
+
+
+func _log_file_size(path: String) -> int:
+	var file = FileAccess.open(path, FileAccess.READ)
+	if not file:
+		return 0
+	var size = file.get_length()
+	file.close()
+	return size
